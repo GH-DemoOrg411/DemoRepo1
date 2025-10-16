@@ -1,0 +1,59 @@
+name: Promote
+
+on:
+  workflow_dispatch:
+
+#env:
+#  IMAGE_REGISTRY: registry-dev.otg.net:5000/otg
+#  DOCKER_IMAGE: shared-organization-manager
+
+jobs:
+  promote:
+    runs-on: dev
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Load environment variables
+        run: |
+          cat .github/workflows/.promote | grep -v '^#' | while IFS= read -r line; do
+            echo "$line" >> $GITHUB_ENV
+          done
+
+      - name: Promote Docker image
+        run: |
+          echo "Promoting image from $TAG_TO_PROMOTE to $PROMOTE_TAG"
+          docker pull $IMAGE_REGISTRY/$DOCKER_IMAGE:$TAG_TO_PROMOTE
+          docker tag $IMAGE_REGISTRY/$DOCKER_IMAGE:$TAG_TO_PROMOTE $IMAGE_REGISTRY/$DOCKER_IMAGE:$PROMOTE_TAG
+          docker push $IMAGE_REGISTRY/$DOCKER_IMAGE:$PROMOTE_TAG
+
+      - name: Update next development version
+        run: |
+          # Calculate next version
+          VERSION_BASE=$(echo $TAG_TO_PROMOTE | cut -d'.' -f1-2)
+          PATCH=$(echo $TAG_TO_PROMOTE | cut -d'.' -f3)
+          NEXT_PATCH=$((PATCH + 1))
+          NEW_DEV_TAG="${VERSION_BASE}.${NEXT_PATCH}.snapshot"
+          
+          echo "Creating next development version: $NEW_DEV_TAG"
+          
+          # Tag next development version
+          docker tag ${IMAGE_REGISTRY}/${DOCKER_IMAGE}:${TAG_TO_PROMOTE} ${IMAGE_REGISTRY}/${DOCKER_IMAGE}:${NEW_DEV_TAG}
+          docker push ${IMAGE_REGISTRY}/${DOCKER_IMAGE}:${NEW_DEV_TAG}
+          
+          # Update files
+          sed -i "s/TAG_TO_PROMOTE=.*/TAG_TO_PROMOTE=$NEW_DEV_TAG/" .github/workflows/.promote
+          sed -i "s/NEXT_TAG=.*/NEXT_TAG=${VERSION_BASE}.$((NEXT_PATCH + 1)).snapshot/" .github/workflows/.promote
+          sed -i "s/DOCKER_TAG=.*/DOCKER_TAG=r$NEW_DEV_TAG/" .github/workflows/.env-dev
+          sed -i "s/DOCKER_TAG=.*/DOCKER_TAG=r$PROMOTE_TAG/" .github/workflows/.env-sandbox
+
+      - name: Commit changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add .github/workflows/.promote .github/workflows/.env-dev
+          git add .github/workflows/.promote .github/workflows/.env-dev .github/workflows/.env-sandbox
+          git commit -m "chore: Update versions after promotion" || echo "No changes to commit"
+          git push || echo "No changes to push"
